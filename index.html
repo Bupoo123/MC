@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>微生物数据分析工具（两两比较）</title>
+  <title>微生物数据分析工具（两两比较）V2.72</title>
   <!-- 引入 XLSX 用于 Excel 文件解析 -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.5/xlsx.full.min.js"></script>
   <!-- 引入 PapaParse 用于 CSV/TSV 解析（用于微生物列表） -->
@@ -92,14 +92,24 @@
   <div id="consistencySection">
     <h3>各样本检出一致率</h3>
     <button id="consistencyBtn">计算检出一致率</button>
+    <!-- 新增筛选输入 -->
+    <label>筛选一致率低于 (%): 
+      <input type="number" id="consistencyFilter" value="100" min="0" max="100">
+    </label>
+    <button id="consistencyFilterBtn">筛选</button>
     <div id="consistencyChart"></div>
     <div id="consistencyTable"></div>
   </div>
 
-  <!-- 新增属内排名第一检出一致率展示区域 -->
+  <!-- 属内排名第一检出一致率展示区域 -->
   <div id="topConsistencySection">
     <h3>各样本属内排名第一检出一致率</h3>
     <button id="topConsistencyBtn">计算属内排名第一一致率</button>
+    <!-- 新增筛选输入 -->
+    <label>筛选顶尖一致率低于 (%): 
+      <input type="number" id="topConsistencyFilter" value="100" min="0" max="100">
+    </label>
+    <button id="topConsistencyFilterBtn">筛选</button>
     <div id="topConsistencyChart"></div>
     <div id="topConsistencyTable"></div>
   </div>
@@ -108,26 +118,23 @@
     // 全局变量
     let file1Data = null;
     let file2Data = null;
-    let mergedData = null;
     let chartData = null;
     let tableData = null;
-    let sampleList = [];  // 存储所有共同样本（过滤后）
-    let taxidFilterList = []; // 存储上传的微生物列表中的 taxid（字符串形式）
-    let aggHighData = [];    // 存储 CSV1 >> CSV2 的统计数据
-    let aggLowData = [];     // 存储 CSV1 << CSV2 的统计数据
-    let file1Name = "文件1"; // 默认文件名
+    let sampleList = [];
+    let taxidFilterList = [];
+    let aggHighData = [];
+    let aggLowData = [];
+    let file1Name = "文件1";
     let file2Name = "文件2";
+    // 存储计算结果，全局保存以便筛选
+    let globalConsistencyResults = [];
+    let globalTopConsistencyResults = [];
 
-    // 从 sheet 名称中提取样本名（取第一个“-”和第二个“-”之间的内容）
     function extractSampleFromSheetName(sheetName) {
       const parts = sheetName.split("-");
-      if (parts.length >= 2) {
-        return parts[1];
-      }
-      return sheetName;
+      return parts.length >= 2 ? parts[1] : sheetName;
     }
 
-    // 使用 XLSX 解析 Excel 文件，遍历所有 sheet，将每个 sheet 的数据转换为 JSON，并附加 sample 属性
     function parseExcel(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -144,32 +151,25 @@
           });
           resolve(allData);
         };
-        reader.onerror = function(err) {
-          reject(err);
-        };
+        reader.onerror = err => reject(err);
         reader.readAsArrayBuffer(file);
       });
     }
 
-    // 解析微生物列表文件（CSV，包含 taxid、name、cn_name 等）
     function parseTaxidFile(file) {
       return new Promise((resolve, reject) => {
         Papa.parse(file, {
           header: true,
           skipEmptyLines: true,
-          complete: function(results) {
-            // 同时支持 "taxid" 或 "TaxID"
+          complete: results => {
             const list = results.data.map(r => String(r.taxid || r.TaxID).trim());
             resolve(list);
           },
-          error: function(err) {
-            reject(err);
-          }
+          error: err => reject(err)
         });
       });
     }
 
-    // 处理文件1上传
     document.getElementById('file1').addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (file) {
@@ -177,13 +177,9 @@
         parseExcel(file).then(data => {
           file1Data = data;
           updateSampleSelect();
-        }).catch(err => {
-          alert("解析文件1出错: " + err);
-        });
+        }).catch(err => alert("解析文件1出错: " + err));
       }
     });
-
-    // 处理文件2上传
     document.getElementById('file2').addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (file) {
@@ -191,208 +187,132 @@
         parseExcel(file).then(data => {
           file2Data = data;
           updateSampleSelect();
-        }).catch(err => {
-          alert("解析文件2出错: " + err);
-        });
+        }).catch(err => alert("解析文件2出错: " + err));
       }
     });
-
-    // 处理微生物列表上传
     document.getElementById('taxidFile').addEventListener('change', function(e) {
       const file = e.target.files[0];
       if (file) {
         parseTaxidFile(file).then(list => {
           taxidFilterList = list;
           document.getElementById('taxidStatus').innerText = `已上传 ${list.length} 个 taxid`;
-        }).catch(err => {
-          alert("解析微生物列表出错: " + err);
-        });
+        }).catch(err => alert("解析微生物列表出错: " + err));
       }
     });
 
-    // 填充样本下拉框
     function populateSampleSelect(list) {
-      const sampleSelect = document.getElementById('sampleSelect');
-      sampleSelect.innerHTML = "";
+      const select = document.getElementById('sampleSelect');
+      select.innerHTML = "";
       list.forEach(sample => {
-        const option = document.createElement('option');
-        option.value = sample;
-        option.text = sample;
-        sampleSelect.appendChild(option);
+        const opt = document.createElement('option');
+        opt.value = sample;
+        opt.text = sample;
+        select.appendChild(opt);
       });
     }
-
-    // 更新样本下拉框（取两个文件中 sample 的交集，同时排除 "NC" 和 "PC"）
     function updateSampleSelect() {
       if (!file1Data || !file2Data) return;
-      const samples1 = new Set(file1Data.map(row => row.sample));
-      const samples2 = new Set(file2Data.map(row => row.sample));
-      console.log("file1 samples:", samples1);
-      console.log("file2 samples:", samples2);
-      // 取交集，并排除 "NC" 与 "PC"
-      const commonSamples = [...samples1].filter(x => samples2.has(x) && x !== "NC" && x !== "PC");
-      sampleList = commonSamples;
-      console.log("commonSamples:", commonSamples);
-      // 若用户已在搜索框中输入内容，则先过滤再填充
+      const samples1 = new Set(file1Data.map(r => r.sample));
+      const samples2 = new Set(file2Data.map(r => r.sample));
+      const common = [...samples1].filter(x => samples2.has(x) && x !== "NC" && x !== "PC");
+      sampleList = common;
       filterSamples();
     }
-
-    // 过滤样本，下拉框中仅显示名称包含搜索关键字的样本
     function filterSamples() {
-      const searchValue = document.getElementById('sampleSearch').value.trim().toLowerCase();
+      const key = document.getElementById('sampleSearch').value.trim().toLowerCase();
       let filtered = sampleList;
-      if (searchValue !== "") {
-        filtered = sampleList.filter(s => s.toLowerCase().includes(searchValue));
+      if (key !== "") {
+        filtered = sampleList.filter(s => s.toLowerCase().includes(key));
       }
       populateSampleSelect(filtered);
     }
-
-    // 为样本搜索输入框绑定事件
     document.getElementById('sampleSearch').addEventListener('input', filterSamples);
 
-    // 合并单个样本数据（用于绘制单个样本散点图）：根据所选样本、指标和阈值过滤，并以 taxid 为键外连接
-    function mergeData(selectedSample, metric, threshold) {
-      const data1 = file1Data.filter(row => {
-        let value = parseFloat(row[metric]);
-        if (isNaN(value)) value = 0;
-        return value >= threshold && row.sample === selectedSample;
-      });
-      const data2 = file2Data.filter(row => {
-        let value = parseFloat(row[metric]);
-        if (isNaN(value)) value = 0;
-        return value >= threshold && row.sample === selectedSample;
-      });
-      console.log(`selectedSample: ${selectedSample}, file1Data count: ${data1.length}, file2Data count: ${data2.length}`);
-      
+    function mergeData(sample, metric, threshold) {
+      const data1 = file1Data.filter(r => r.sample === sample && (parseFloat(r[metric]) >= threshold || 0));
+      const data2 = file2Data.filter(r => r.sample === sample && (parseFloat(r[metric]) >= threshold || 0));
       const map1 = new Map();
-      data1.forEach(row => { map1.set(row["TaxID"], row); });
+      data1.forEach(r => { map1.set(r["TaxID"], r); });
       const map2 = new Map();
-      data2.forEach(row => { map2.set(row["TaxID"], row); });
-      const taxidSet = new Set([...map1.keys(), ...map2.keys()]);
+      data2.forEach(r => { map2.set(r["TaxID"], r); });
+      const union = new Set([...map1.keys(), ...map2.keys()]);
       let merged = [];
-      taxidSet.forEach(taxid => {
-        const row1 = map1.get(taxid) || {};
-        const row2 = map2.get(taxid) || {};
-        let m1 = parseFloat(row1[metric]);
-        let m2 = parseFloat(row2[metric]);
-        if (isNaN(m1)) m1 = 0;
-        if (isNaN(m2)) m2 = 0;
+      union.forEach(taxid => {
+        const r1 = map1.get(taxid) || {};
+        const r2 = map2.get(taxid) || {};
+        let m1 = parseFloat(r1[metric]) || 0;
+        let m2 = parseFloat(r2[metric]) || 0;
         const epsilon = 1e-6;
         if (m1 === 0) m1 = epsilon;
         if (m2 === 0) m2 = epsilon;
-        let cn_name = row1["ChineseName"] || row2["ChineseName"] || ("TaxID " + taxid);
-        merged.push({
-          taxid: taxid,
-          cn_name: cn_name,
-          metric1: m1,
-          metric2: m2
-        });
+        const name = r1["ChineseName"] || r2["ChineseName"] || ("TaxID " + taxid);
+        merged.push({ taxid, cn_name: name, metric1: m1, metric2: m2 });
       });
-      // 若上传了微生物列表，则过滤，仅保留列表中的 taxid（字符串比较）
       if (taxidFilterList && taxidFilterList.length > 0) {
-        merged = merged.filter(row => taxidFilterList.includes(String(row.taxid)));
+        merged = merged.filter(r => taxidFilterList.includes(String(r.taxid)));
       }
       return merged;
     }
 
-    // 使用 Plotly 绘制当前样本散点图（对数坐标），并添加 y=x 参考线
-    function plotChart(merged, metric, selectedSample) {
+    function plotChart(merged, metric, sample) {
       const groups = {};
-      merged.forEach(row => {
-        if (!groups[row.taxid]) { groups[row.taxid] = []; }
-        groups[row.taxid].push(row);
+      merged.forEach(r => {
+        if (!groups[r.taxid]) groups[r.taxid] = [];
+        groups[r.taxid].push(r);
       });
       const traces = [];
-      const colorPool = Plotly.d3.scale.category10().range();
-      let colorIndex = 0;
+      const colors = Plotly.d3.scale.category10().range();
+      let ci = 0;
       for (let taxid in groups) {
-        const groupData = groups[taxid];
-        const name = groupData[0].cn_name;
-        const x = groupData.map(r => r.metric1);
-        const y = groupData.map(r => r.metric2);
-        traces.push({
-          x: x,
-          y: y,
-          mode: 'markers',
-          type: 'scatter',
-          name: name,
-          marker: { color: colorPool[colorIndex % colorPool.length] }
-        });
-        colorIndex++;
+        const group = groups[taxid];
+        const name = group[0].cn_name;
+        const x = group.map(r => r.metric1);
+        const y = group.map(r => r.metric2);
+        traces.push({ x, y, mode: 'markers', type: 'scatter', name, marker: { color: colors[ci % colors.length] } });
+        ci++;
       }
-      let allX = merged.map(r => r.metric1);
-      let allY = merged.map(r => r.metric2);
+      const allX = merged.map(r => r.metric1);
+      const allY = merged.map(r => r.metric2);
       const minVal = Math.min(...allX, ...allY);
       const maxVal = Math.max(...allX, ...allY);
-      traces.push({
-        x: [minVal, maxVal],
-        y: [minVal, maxVal],
-        mode: 'lines',
-        name: 'y=x',
-        line: { dash: 'dash', color: 'red' }
-      });
-      const layout = {
-        title: `样本 ${selectedSample} 指标 ${metric} 对比`,
-        xaxis: { title: `${file1Name} ${metric}`, type: 'log' },
-        yaxis: { title: `${file2Name} ${metric}`, type: 'log' },
-        legend: { x: 1.05, y: 1 }
-      };
+      traces.push({ x: [minVal, maxVal], y: [minVal, maxVal], mode: 'lines', name: 'y=x', line: { dash: 'dash', color: 'red' } });
+      const layout = { title: `样本 ${sample} 指标 ${metric} 对比`, xaxis: { title: `${file1Name} ${metric}`, type: 'log' }, yaxis: { title: `${file2Name} ${metric}`, type: 'log' }, legend: { x: 1.05, y: 1 } };
       Plotly.newPlot('chart', traces, layout);
-      return { traces: traces, layout: layout };
+      return { traces, layout };
     }
 
-    // 更新当前样本右侧表格，显示所有病原体及其指标值
     function updateTable(merged, metric) {
       let html = `<table><tr><th>病原体</th><th>${file1Name} ${metric}</th><th>${file2Name} ${metric}</th></tr>`;
-      merged.forEach(row => {
-        html += `<tr><td>${row.cn_name}</td><td>${row.metric1}</td><td>${row.metric2}</td></tr>`;
-      });
+      merged.forEach(r => { html += `<tr><td>${r.cn_name}</td><td>${r.metric1}</td><td>${r.metric2}</td></tr>`; });
       html += '</table>';
       document.getElementById('tableContainer').innerHTML = html;
     }
 
-    // “绘图”按钮事件（针对当前选择的样本）
     document.getElementById('plotBtn').addEventListener('click', function() {
-      const selectedSample = document.getElementById('sampleSelect').value;
+      const sample = document.getElementById('sampleSelect').value;
       const metric = document.getElementById('metric').value;
       const threshold = parseFloat(document.getElementById('threshold').value) || 0;
-      if (!selectedSample) {
-        alert("请选择样本");
-        return;
-      }
-      if (!file1Data || !file2Data) {
-        alert("请先上传两个文件");
-        return;
-      }
-      const merged = mergeData(selectedSample, metric, threshold);
-      mergedData = merged;
-      chartData = plotChart(merged, metric, selectedSample);
+      if (!sample) { alert("请选择样本"); return; }
+      if (!file1Data || !file2Data) { alert("请先上传两个文件"); return; }
+      const merged = mergeData(sample, metric, threshold);
+      chartData = plotChart(merged, metric, sample);
       updateTable(merged, metric);
       tableData = merged;
     });
 
-    // “保存图像和表格”按钮事件（针对当前样本结果）
     document.getElementById('saveBtn').addEventListener('click', function() {
-      if (!chartData || !tableData) {
-        alert("请先绘图再保存");
-        return;
-      }
-      // 导出图像
-      Plotly.toImage('chart', {format: 'png', width: 800, height: 600})
-        .then(function(dataUrl) {
-          const link = document.createElement('a');
-          link.href = dataUrl;
-          link.download = 'chart.png';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        });
-      // 导出当前样本表格数据
+      if (!chartData || !tableData) { alert("请先绘图再保存"); return; }
+      Plotly.toImage('chart', {format: 'png', width: 800, height: 600}).then(dataUrl => {
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = 'chart.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      });
       const metric = document.getElementById('metric').value;
       let csv = `病原体,${file1Name} ${metric},${file2Name} ${metric}\n`;
-      tableData.forEach(row => {
-        csv += `${row.cn_name},${row.metric1},${row.metric2}\n`;
-      });
+      tableData.forEach(r => { csv += `${r.cn_name},${r.metric1},${r.metric2}\n`; });
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link2 = document.createElement('a');
@@ -403,50 +323,34 @@
       document.body.removeChild(link2);
     });
 
-    // “统计所有样本比较统计”按钮事件（原有统计功能保持不变）
     document.getElementById('aggBtn').addEventListener('click', function() {
       const metric = document.getElementById('metric').value;
       const threshold = parseFloat(document.getElementById('threshold').value) || 0;
-      if (!file1Data || !file2Data) {
-        alert("请先上传两个文件");
-        return;
-      }
+      if (!file1Data || !file2Data) { alert("请先上传两个文件"); return; }
       let commonSamples = sampleList;
       if (commonSamples.length === 0) {
-        const samples1 = new Set(file1Data.map(row => row.sample));
-        const samples2 = new Set(file2Data.map(row => row.sample));
-        commonSamples = [...samples1].filter(x => samples2.has(x) && x !== "NC" && x !== "PC");
+        const s1 = new Set(file1Data.map(r => r.sample));
+        const s2 = new Set(file2Data.map(r => r.sample));
+        commonSamples = [...s1].filter(x => s2.has(x) && x !== "NC" && x !== "PC");
       }
       let aggMap = {};
       commonSamples.forEach(sample => {
         const merged = mergeData(sample, metric, threshold);
-        merged.forEach(row => {
-          const taxid = row.taxid;
-          if (!aggMap[taxid]) {
-            aggMap[taxid] = {
-              taxid: taxid,
-              cn_name: row.cn_name,
-              sampleCount: 0,
-              totalCSV1: 0,
-              totalCSV2: 0
-            };
-          }
+        merged.forEach(r => {
+          const taxid = r.taxid;
+          if (!aggMap[taxid]) { aggMap[taxid] = { taxid, cn_name: r.cn_name, sampleCount: 0, totalCSV1: 0, totalCSV2: 0 }; }
           aggMap[taxid].sampleCount += 1;
-          aggMap[taxid].totalCSV1 += row.metric1;
-          aggMap[taxid].totalCSV2 += row.metric2;
+          aggMap[taxid].totalCSV1 += r.metric1;
+          aggMap[taxid].totalCSV2 += r.metric2;
         });
       });
       let aggArray = Object.values(aggMap);
       aggArray.forEach(item => {
         item.avgCSV1 = item.totalCSV1 / item.sampleCount;
         item.avgCSV2 = item.totalCSV2 / item.sampleCount;
-        if (item.avgCSV2 > 0) {
-          item.ratio = item.avgCSV1 / item.avgCSV2;
-        } else if (item.avgCSV1 > 0) {
-          item.ratio = Infinity;
-        } else {
-          item.ratio = 0;
-        }
+        if (item.avgCSV2 > 0) { item.ratio = item.avgCSV1 / item.avgCSV2; }
+        else if (item.avgCSV1 > 0) { item.ratio = Infinity; }
+        else { item.ratio = 0; }
       });
       let highGroup = aggArray.filter(item => item.ratio >= 3);
       let lowGroup = aggArray.filter(item => item.ratio <= (1/3));
@@ -459,146 +363,157 @@
 
     function updateAggTables(highGroup, lowGroup, metric) {
       let highHtml = `<table><tr><th>病原体</th><th>样本数</th><th>CSV1 平均 ${metric}</th><th>CSV2 平均 ${metric}</th><th>比值 (CSV1/CSV2)</th></tr>`;
-      if (highGroup.length === 0) {
-        highHtml += '<tr><td colspan="5">无满足条件结果</td></tr>';
-      } else {
-        highGroup.forEach(item => {
-          highHtml += `<tr><td>${item.cn_name}</td><td>${item.sampleCount}</td><td>${item.avgCSV1.toFixed(2)}</td><td>${item.avgCSV2.toFixed(2)}</td><td>${(item.ratio===Infinity ? "∞" : item.ratio.toFixed(2))}</td></tr>`;
-        });
-      }
+      if (highGroup.length === 0) { highHtml += '<tr><td colspan="5">无满足条件结果</td></tr>'; }
+      else { highGroup.forEach(item => { highHtml += `<tr><td>${item.cn_name}</td><td>${item.sampleCount}</td><td>${item.avgCSV1.toFixed(2)}</td><td>${item.avgCSV2.toFixed(2)}</td><td>${(item.ratio===Infinity ? "∞" : item.ratio.toFixed(2))}</td></tr>`; }); }
       highHtml += '</table>';
       document.getElementById('aggHighTableContainer').innerHTML = highHtml;
       
       let lowHtml = `<table><tr><th>病原体</th><th>样本数</th><th>CSV1 平均 ${metric}</th><th>CSV2 平均 ${metric}</th><th>比值 (CSV1/CSV2)</th></tr>`;
-      if (lowGroup.length === 0) {
-        lowHtml += '<tr><td colspan="5">无满足条件结果</td></tr>';
-      } else {
-        lowGroup.forEach(item => {
-          lowHtml += `<tr><td>${item.cn_name}</td><td>${item.sampleCount}</td><td>${item.avgCSV1.toFixed(2)}</td><td>${item.avgCSV2.toFixed(2)}</td><td>${item.ratio.toFixed(2)}</td></tr>`;
-        });
-      }
+      if (lowGroup.length === 0) { lowHtml += '<tr><td colspan="5">无满足条件结果</td></tr>'; }
+      else { lowGroup.forEach(item => { lowHtml += `<tr><td>${item.cn_name}</td><td>${item.sampleCount}</td><td>${item.avgCSV1.toFixed(2)}</td><td>${item.avgCSV2.toFixed(2)}</td><td>${item.ratio.toFixed(2)}</td></tr>`; }); }
       lowHtml += '</table>';
       document.getElementById('aggLowTableContainer').innerHTML = lowHtml;
     }
 
-    // ---------------- 新增“检出一致率”功能 ----------------
-    // 计算单个样本的检出一致率
-    function computeConsistency(selectedSample, metric, threshold) {
-      let set1 = new Set(file1Data.filter(row => row.sample === selectedSample && (parseFloat(row[metric]) >= threshold)).map(row => row["TaxID"]));
-      let set2 = new Set(file2Data.filter(row => row.sample === selectedSample && (parseFloat(row[metric]) >= threshold)).map(row => row["TaxID"]));
-      if (taxidFilterList && taxidFilterList.length > 0) {
-        set1 = new Set([...set1].filter(t => taxidFilterList.includes(String(t))));
-        set2 = new Set([...set2].filter(t => taxidFilterList.includes(String(t))));
-      }
-      const union = new Set([...set1, ...set2]);
-      const intersection = new Set([...set1].filter(t => set2.has(t)));
-      let consistency = union.size > 0 ? intersection.size / union.size : null;
-      return consistency;
-    }
+    // ---------------- 检出一致率功能 ----------------
+    // 计算单个样本检出一致率，并返回 { rate, diffNames }，其中 diffNames 为只在一侧检测到的物种中文名称（最多5个）
+    function computeConsistency(sample, metric, threshold) {
+  // 对 TaxID 字符串进行 trim 操作
+  let set1 = new Set(
+    file1Data
+      .filter(r => r.sample === sample && (parseFloat(r[metric]) >= threshold))
+      .map(r => String(r["TaxID"]).trim())
+  );
+  let set2 = new Set(
+    file2Data
+      .filter(r => r.sample === sample && (parseFloat(r[metric]) >= threshold))
+      .map(r => String(r["TaxID"]).trim())
+  );
+  if (taxidFilterList && taxidFilterList.length > 0) {
+    set1 = new Set([...set1].filter(t => taxidFilterList.includes(t)));
+    set2 = new Set([...set2].filter(t => taxidFilterList.includes(t)));
+  }
+  const union = new Set([...set1, ...set2]);
+  const intersection = new Set([...set1].filter(t => set2.has(t)));
+  let rate = union.size > 0 ? intersection.size / union.size : null;
+  // 影响一致率的物种：只在一侧检测到的
+  let diff = new Set([...union].filter(t => !intersection.has(t)));
+  let diffNamesSet = new Set();
+  diff.forEach(taxid => {
+    // 从 file1Data 中查找对应的中文名称，并 trim TaxID 字符串
+    let row = file1Data.find(r => r.sample === sample && String(r["TaxID"]).trim() === taxid && r["ChineseName"]);
+    if (row) { diffNamesSet.add(row["ChineseName"]); }
+  });
+  let diffNames = Array.from(diffNamesSet).slice(0, 5);
+  return { rate, diffNames };
+}
 
-    // “计算检出一致率”按钮事件：对所有共同样本计算一致率，并生成箱线图和表格展示结果
+    // “计算检出一致率”按钮事件
     document.getElementById('consistencyBtn').addEventListener('click', function() {
       const metric = document.getElementById('metric').value;
       const threshold = parseFloat(document.getElementById('threshold').value) || 0;
-      if (!file1Data || !file2Data) {
-        alert("请先上传两个文件");
-        return;
-      }
-      let consistencyResults = [];
+      if (!file1Data || !file2Data) { alert("请先上传两个文件"); return; }
+      let results = [];
       sampleList.forEach(sample => {
-        let rate = computeConsistency(sample, metric, threshold);
-        if (rate !== null) {
-          consistencyResults.push({ sample: sample, rate: rate });
-        }
+        let res = computeConsistency(sample, metric, threshold);
+        if (res.rate !== null) { results.push({ sample, rate: res.rate, diffNames: res.diffNames }); }
       });
-      if (consistencyResults.length === 0) {
-        alert("没有数据计算检出一致率，请检查阈值或数据内容！");
-        return;
-      }
-      const rates = consistencyResults.map(item => item.rate);
-      const trace = {
-        y: rates,
-        type: 'box',
-        name: '检出一致率'
-      };
-      const layout = {
-        title: `所有样本检出一致率箱线图 (${metric})`,
-        yaxis: { title: '检出一致率', tickformat: '.2%' }
-      };
-      Plotly.newPlot('consistencyChart', [trace], layout);
-      let tableHtml = `<table><tr><th>样本</th><th>检出一致率</th></tr>`;
-      consistencyResults.forEach(item => {
-        tableHtml += `<tr><td>${item.sample}</td><td>${(item.rate * 100).toFixed(2)}%</td></tr>`;
-      });
-      tableHtml += '</table>';
-      document.getElementById('consistencyTable').innerHTML = tableHtml;
+      if (results.length === 0) { alert("没有数据计算检出一致率，请检查阈值或数据内容！"); return; }
+      globalConsistencyResults = results;  // 保存全局结果
+      updateConsistencyDisplay(results, metric);
     });
 
-    // ---------------- 新增“属内排名第一检出一致率”功能 ----------------
-    // 对单个样本计算顶尖（属内排名第一）的检出一致率
-    function computeTopConsistency(selectedSample, metric, threshold) {
-      // 对于 file1 和 file2 分别筛选满足条件、且 Rank 为 "S" 的记录，并按 GenusName 分组，
-      // 选择 RPM 最高的记录作为顶尖物种
-      function getTopSet(data) {
-        let filtered = data.filter(row => row.sample === selectedSample && (parseFloat(row[metric]) >= threshold) && row["Rank"] === "S");
-        if (taxidFilterList && taxidFilterList.length > 0) {
-          filtered = filtered.filter(row => taxidFilterList.includes(String(row["TaxID"])));
-        }
-        const topMap = {};
-        filtered.forEach(row => {
-          const genus = row["GenusName"];
-          let rpm = parseFloat(row["RPM"]);
-          if (isNaN(rpm)) rpm = 0;
-          if (!topMap[genus] || rpm > topMap[genus].rpm) {
-            topMap[genus] = { taxid: row["TaxID"], rpm: rpm };
-          }
-        });
-        return new Set(Object.keys(topMap)); // 以属名为标识
-      }
-      let topSet1 = getTopSet(file1Data);
-      let topSet2 = getTopSet(file2Data);
-      const union = new Set([...topSet1, ...topSet2]);
-      const intersection = new Set([...topSet1].filter(genus => topSet2.has(genus)));
-      let topConsistency = union.size > 0 ? intersection.size / union.size : null;
-      return topConsistency;
+    function updateConsistencyDisplay(results, metric) {
+      const rates = results.map(item => item.rate);
+      const trace = { y: rates, type: 'box', name: '检出一致率' };
+      const layout = { title: `所有样本检出一致率箱线图 (${metric})`, yaxis: { title: '检出一致率', tickformat: '.2%' } };
+      Plotly.newPlot('consistencyChart', [trace], layout);
+      let html = `<table><tr><th>样本</th><th>检出一致率</th><th>影响微生物（中文名称，最多5个）</th></tr>`;
+      results.forEach(item => {
+        html += `<tr><td>${item.sample}</td><td>${(item.rate * 100).toFixed(2)}%</td><td>${item.diffNames.join("，")}</td></tr>`;
+      });
+      html += '</table>';
+      document.getElementById('consistencyTable').innerHTML = html;
     }
 
-    // “计算属内排名第一检出一致率”按钮事件：对所有共同样本计算顶尖一致率，并生成箱线图和表格展示结果
+    // 筛选检出一致率结果（低于指定百分比）
+    document.getElementById('consistencyFilterBtn').addEventListener('click', function() {
+      const filterVal = parseFloat(document.getElementById('consistencyFilter').value) / 100;
+      const filtered = globalConsistencyResults.filter(item => item.rate < filterVal);
+      updateConsistencyDisplay(filtered, document.getElementById('metric').value);
+    });
+
+    // ---------------- 属内排名第一一致率功能 ----------------
+    // 计算单个样本顶尖检出一致率，返回 { rate, diffNames }
+    function computeTopConsistency(sample, metric, threshold) {
+  function getTopSet(data) {
+    let filtered = data.filter(r =>
+      r.sample === sample &&
+      (parseFloat(r[metric]) >= threshold) &&
+      r["Rank"] === "S"
+    );
+    if (taxidFilterList && taxidFilterList.length > 0) {
+      filtered = filtered.filter(r => taxidFilterList.includes(String(r["TaxID"]).trim()));
+    }
+    const topMap = {};
+    filtered.forEach(r => {
+      const genus = r["GenusName"] ? r["GenusName"].trim() : "";
+      let rpm = parseFloat(r["RPM"]) || 0;
+      if (!topMap[genus] || rpm > topMap[genus].rpm) {
+        topMap[genus] = { taxid: String(r["TaxID"]).trim(), rpm, chineseName: r["ChineseName"] };
+      }
+    });
+    return { set: new Set(Object.keys(topMap)), details: topMap };
+  }
+  let top1 = getTopSet(file1Data);
+  let top2 = getTopSet(file2Data);
+  const unionSet = new Set([...top1.set, ...top2.set]);
+  const intersection = new Set([...top1.set].filter(genus => top2.set.has(genus)));
+  let rate = unionSet.size > 0 ? intersection.size / unionSet.size : null;
+  // 影响顶尖一致率：即只在一侧出现的顶尖属
+  let diff = new Set([...unionSet].filter(genus => !intersection.has(genus)));
+  let diffNamesSet = new Set();
+  diff.forEach(genus => {
+    let cname = top1.details[genus] ? top1.details[genus].chineseName :
+                (top2.details[genus] ? top2.details[genus].chineseName : genus);
+    diffNamesSet.add(cname);
+  });
+  let diffNames = Array.from(diffNamesSet).slice(0, 5);
+  return { rate, diffNames };
+}
+
+    // “计算属内排名第一一致率”按钮事件
     document.getElementById('topConsistencyBtn').addEventListener('click', function() {
       const metric = document.getElementById('metric').value;
       const threshold = parseFloat(document.getElementById('threshold').value) || 0;
-      if (!file1Data || !file2Data) {
-        alert("请先上传两个文件");
-        return;
-      }
-      let topConsistencyResults = [];
+      if (!file1Data || !file2Data) { alert("请先上传两个文件"); return; }
+      let results = [];
       sampleList.forEach(sample => {
-        let rate = computeTopConsistency(sample, metric, threshold);
-        if (rate !== null) {
-          topConsistencyResults.push({ sample: sample, rate: rate });
-        }
+        let res = computeTopConsistency(sample, metric, threshold);
+        if (res.rate !== null) { results.push({ sample, rate: res.rate, diffNames: res.diffNames }); }
       });
-      if (topConsistencyResults.length === 0) {
-        alert("没有数据计算属内排名第一检出一致率，请检查阈值或数据内容！");
-        return;
-      }
-      const rates = topConsistencyResults.map(item => item.rate);
-      const trace = {
-        y: rates,
-        type: 'box',
-        name: '顶尖一致率'
-      };
-      const layout = {
-        title: `所有样本属内排名第一检出一致率箱线图 (${metric})`,
-        yaxis: { title: '顶尖检出一致率', tickformat: '.2%' }
-      };
+      if (results.length === 0) { alert("没有数据计算属内排名第一检出一致率，请检查阈值或数据内容！"); return; }
+      globalTopConsistencyResults = results;
+      updateTopConsistencyDisplay(results, metric);
+    });
+
+    function updateTopConsistencyDisplay(results, metric) {
+      const rates = results.map(item => item.rate);
+      const trace = { y: rates, type: 'box', name: '顶尖一致率' };
+      const layout = { title: `所有样本属内排名第一检出一致率箱线图 (${metric})`, yaxis: { title: '顶尖检出一致率', tickformat: '.2%' } };
       Plotly.newPlot('topConsistencyChart', [trace], layout);
-      let tableHtml = `<table><tr><th>样本</th><th>顶尖检出一致率</th></tr>`;
-      topConsistencyResults.forEach(item => {
-        tableHtml += `<tr><td>${item.sample}</td><td>${(item.rate * 100).toFixed(2)}%</td></tr>`;
+      let html = `<table><tr><th>样本</th><th>顶尖检出一致率</th><th>影响微生物（中文名称，最多5个）</th></tr>`;
+      results.forEach(item => {
+        html += `<tr><td>${item.sample}</td><td>${(item.rate * 100).toFixed(2)}%</td><td>${item.diffNames.join("，")}</td></tr>`;
       });
-      tableHtml += '</table>';
-      document.getElementById('topConsistencyTable').innerHTML = tableHtml;
+      html += '</table>';
+      document.getElementById('topConsistencyTable').innerHTML = html;
+    }
+
+    document.getElementById('topConsistencyFilterBtn').addEventListener('click', function() {
+      const filterVal = parseFloat(document.getElementById('topConsistencyFilter').value) / 100;
+      const filtered = globalTopConsistencyResults.filter(item => item.rate < filterVal);
+      updateTopConsistencyDisplay(filtered, document.getElementById('metric').value);
     });
   </script>
 </body>
